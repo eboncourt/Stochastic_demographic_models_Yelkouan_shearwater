@@ -1,0 +1,432 @@
+################################################################################
+# Stochastic Population Model for the Mediterranean Yelkouan Shearwater
+# Based on Port-Cros data (2003-2024) and wild boar predation scenarios.
+#
+# Author: Etienne Boncourt
+# Date: November 2025
+################################################################################
+
+library(popbio)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(grid)
+library(cowplot)
+
+############################
+# 1. Base Parameter Definitions (Uniform Distributions)
+############################
+
+# Base demographic parameters with variability (±0.1)
+# Each parameter is defined by a uniform distribution [min, max]
+params_base <- list(
+  S1 = list(min = max(0.0, 0.18 - 0.1), max = min(1.0, 0.18 + 0.1)),  # Juvenile survival (1st year)
+  S2 = list(min = max(0.0, 0.76 - 0.1), max = min(1.0, 0.76 + 0.1)),  # Sub-adult survival (2nd year)
+  S3 = list(min = max(0.0, 0.85 - 0.1), max = min(1.0, 0.85 + 0.1)),  # Sub-adult survival (3rd year)
+  S4 = list(min = max(0.0, 0.90 - 0.1), max = min(1.0, 0.90 + 0.1)),  # Non-breeding adult survival
+  S5 = list(min = max(0.0, 0.90 - 0.1), max = min(1.0, 0.90 + 0.1)),  # Breeding adult survival
+  rho = list(min = max(0.0, 0.50 - 0.1), max = min(1.0, 0.50 + 0.1)),  # Sex ratio (females)
+  p3 = list(min = max(0.0, 0.27 - 0.1), max = min(1.0, 0.27 + 0.1)),  # Probability of prospecting at 3 years
+  p4 = list(min = max(0.0, 0.76 - 0.1), max = min(1.0, 0.76 + 0.1)),  # Probability of prospecting at 4 years
+  p5 = list(min = max(0.0, 0.91 - 0.1), max = min(1.0, 0.91 + 0.1)),  # Probability of prospecting at 5 years
+  r4 = list(min = max(0.0, 0.24 - 0.1), max = min(1.0, 0.24 + 0.1)),  # Probability of recruitment at 4 years
+  r5 = list(min = max(0.0, 0.43 - 0.1), max = min(1.0, 0.43 + 0.1)),  # Probability of recruitment at 5 years
+  Psab = list(min = max(0.0, 0.26 - 0.1), max = min(1.0, 0.26 + 0.1))   # Probability of sabbatical
+)
+
+############################
+# 2. Parameter Adjustments for Each Scenario
+############################
+
+# Scenario 1: Before wild boar outbreak (2003-2016)
+# Breeding success (f) based on empirical data: min=0.18, max=0.80
+params_scenario_1 <- params_base
+params_scenario_1$f <- list(min = 0.18, max = 0.80)
+
+# Scenario 2: During wild boar outbreak (2019-2020)
+# Breeding success (f) based on empirical data: min=0.21, max=0.42
+params_scenario_2 <- params_base
+params_scenario_2$f <- list(min = 0.21, max = 0.42)
+
+# Scenario 3: Moderate predation (2021-2024)
+# Breeding success (f) based on empirical data: min=0.52, max=0.73
+params_scenario_3 <- params_base
+params_scenario_3$f <- list(min = 0.52, max = 0.73)
+
+############################
+# 3. Initial Population Setup for Each Scenario
+############################
+
+# Scenario 1: Stable stage distribution (2003-2016)
+stable_stage_1 <- c(0.036, 0.029, 0.020, 0.007, 0.011, 0.016, 0.001, 0.014, 0.649, 0.217)
+total_population_1 <- 189 / stable_stage_1[9]  # 189 breeding females (NR)
+initial_pop_1 <- round(stable_stage_1 * total_population_1)
+names(initial_pop_1) <- c("N1", "N2", "N3", "N3p", "N4", "N4p", "N5", "N5p", "NR", "NNR")
+
+# Scenario 2: Stable stage distribution (2019-2020)
+# Rounded to 3 decimal places
+stable_stage_2 <- c(0.024, 0.020, 0.014, 0.005, 0.008, 0.011, 0.000, 0.010, 0.677, 0.230)
+total_population_2 <- 189 / stable_stage_2[9]  # 189 breeding females (NR)
+initial_pop_2 <- round(stable_stage_2 * total_population_2)
+names(initial_pop_2) <- c("N1", "N2", "N3", "N3p", "N4", "N4p", "N5", "N5p", "NR", "NNR")
+
+# Scenario 3: Stable stage distribution (2019-2024)
+stable_stage_3 <- c(0.031, 0.026, 0.017, 0.006, 0.010, 0.014, 0.001, 0.013, 0.660, 0.222)
+total_population_3 <- 189 / stable_stage_3[9]  # 189 breeding females (NR)
+initial_pop_3 <- round(stable_stage_3 * total_population_3)
+names(initial_pop_3) <- c("N1", "N2", "N3", "N3p", "N4", "N4p", "N5", "N5p", "NR", "NNR")
+
+############################
+# 4. Function to Build Projection Matrix
+############################
+
+build_matrix <- function(params) {
+  # This function builds the demographic projection matrix (Lefkovitch matrix)
+  # by randomly drawing each parameter from its uniform distribution.
+  #
+  # Args:
+  #   params: List of demographic parameters (with min/max intervals)
+  #
+  # Returns:
+  #   M: 10x10 projection matrix
+  
+  with(as.list(params), {
+    M <- matrix(0, nrow = 10, ncol = 10)
+    colnames(M) <- rownames(M) <- c("N1", "N2", "N3", "N3p", "N4", "N4p", "N5", "N5p", "NR", "NNR")
+    
+    # Randomly draw each parameter from its uniform distribution
+    S1 <- runif(1, params$S1$min, params$S1$max)
+    S2 <- runif(1, params$S2$min, params$S2$max)
+    S3 <- runif(1, params$S3$min, params$S3$max)
+    S4 <- runif(1, params$S4$min, params$S4$max)
+    S5 <- runif(1, params$S5$min, params$S5$max)
+    rho <- runif(1, params$rho$min, params$rho$max)
+    p3 <- runif(1, params$p3$min, params$p3$max)
+    p4 <- runif(1, params$p4$min, params$p4$max)
+    p5 <- runif(1, params$p5$min, params$p5$max)
+    r4 <- runif(1, params$r4$min, params$r4$max)
+    r5 <- runif(1, params$r5$min, params$r5$max)
+    Psab <- runif(1, params$Psab$min, params$Psab$max)
+    f <- runif(1, params$f$min, params$f$max)
+
+    # Fill the projection matrix
+    M["N1", "NR"] <- S1 * f * rho
+    M["N2", "N1"] <- S2
+    M["N3", "N2"] <- S3 * (1 - p3)
+    M["N3p", "N2"] <- S3 * p3
+    M["N4", "N3"] <- S4 * (1 - r4) * (1 - p4)
+    M["N4p", "N3"] <- S4 * (1 - r4) * p4
+    M["N4p", "N3p"] <- S4 * (1 - r4)
+    M["N5", "N4"] <- S4 * (1 - r5) * (1 - p5)
+    M["N5p", "N4"] <- S4 * (1 - r5) * p5
+    M["N5p", "N4p"] <- S4 * (1 - r5)
+    M["NR", "N3"] <- S4 * r4
+    M["NR", "N3p"] <- S4 * r4
+    M["NR", "N4"] <- S4 * r5
+    M["NR", "N4p"] <- S4 * r5
+    M["NR", "N5"] <- S4
+    M["NR", "N5p"] <- S4
+    M["NR", "NR"] <- S5 * (1 - Psab)
+    M["NR", "NNR"] <- S4 * (1 - Psab)
+    M["NNR", "NR"] <- S5 * Psab
+    M["NNR", "NNR"] <- S4 * Psab
+    
+    return(M)
+  })
+}
+
+############################
+# 5. Function to Run Stochastic Simulations
+############################
+
+run_simulations <- function(params, initial_pop, n_sims = 1000, n_years = 100) {
+  # This function runs stochastic population simulations.
+  #
+  # Args:
+  #   params: List of demographic parameters
+  #   initial_pop: Initial population vector (10 elements)
+  #   n_sims: Number of simulations to run (default: 1000)
+  #   n_years: Number of years to simulate (default: 100)
+  #
+  # Returns:
+  #   sim_results: List of simulation results (each element is a data.frame)
+  
+  set.seed(127)  # For reproducibility
+  
+  sim_results <- list()
+  
+  for (i in 1:n_sims) {
+    M <- build_matrix(params)
+    pop <- matrix(0, nrow = n_years, ncol = 10)
+    colnames(pop) <- c("N1", "N2", "N3", "N3p", "N4", "N4p", "N5", "N5p", "NR", "NNR")
+    pop[1, ] <- initial_pop
+    
+    for (t in 2:n_years) {
+      pop[t, ] <- pop[t-1, ] %*% M
+    }
+    
+    sim_results[[i]] <- data.frame(time = 1:n_years, pop)
+  }
+  
+  return(sim_results)
+}
+
+############################
+# 6. Run Simulations for Each Scenario
+############################
+
+# Scenario 1: Before wild boar outbreak (2003-2016)
+sim_results_1 <- run_simulations(params_scenario_1, initial_pop_1)
+
+# Scenario 2: During wild boar outbreak (2019-2020)
+sim_results_2 <- run_simulations(params_scenario_2, initial_pop_2)
+
+# Scenario 3: Moderate predation (2021-2024)
+sim_results_3 <- run_simulations(params_scenario_3, initial_pop_3)
+
+
+############################
+# 7. CALCULATE STOCHASTIC LAMBDA (λs)
+############################
+
+# Function to calculate stochastic lambda for each simulation
+calculate_stochastic_lambda <- function(sim_results) {
+  # Calculate the stochastic lambda (λs) for each simulation
+  # λs is the geometric mean of annual growth rates
+  #
+  # Args:
+  #   sim_results: List of simulation results
+  #
+  # Returns:
+  #   Mean stochastic lambda across all simulations
+  
+  lambdas <- sapply(sim_results, function(sim) {
+    # Calculate annual growth rates (NR at t+1 / NR at t)
+    growth_rates <- sim$NR[-1] / sim$NR[-nrow(sim)]
+    # Geometric mean of growth rates (λs)
+    exp(mean(log(growth_rates), na.rm = TRUE))
+  })
+  # Mean stochastic lambda across all simulations
+  mean_lambda <- mean(lambdas, na.rm = TRUE)
+  return(mean_lambda)
+}
+
+# Calculate mean stochastic lambda for each scenario
+mean_lambda_1 <- calculate_stochastic_lambda(sim_results_1)
+mean_lambda_2 <- calculate_stochastic_lambda(sim_results_2)
+mean_lambda_3 <- calculate_stochastic_lambda(sim_results_3)
+
+cat("\n--- Mean Stochastic Lambda (λs) ---\n")
+cat("Scenario 1 (2003-2016):", round(mean_lambda_1, 3), "\n")
+cat("Scenario 2 (2019-2020):", round(mean_lambda_2, 3), "\n")
+cat("Scenario 3 (2021-2024):", round(mean_lambda_3, 3), "\n")
+
+############################
+# 8. CALCULATE THEORETICAL TRAJECTORIES USING λs
+############################
+
+calculate_theoretical_trajectory <- function(mean_lambda, initial_NR, n_years) {
+  # Calculate theoretical trajectory using mean stochastic lambda
+  #
+  # Args:
+  #   mean_lambda: Mean stochastic lambda
+  #   initial_NR: Initial number of breeding females
+  #   n_years: Number of years to simulate
+  #
+  # Returns:
+  #   Data frame with theoretical trajectory
+  
+  theoretical_NR <- rep(NA, n_years)
+  theoretical_NR[1] <- initial_NR
+  for (t in 2:n_years) {
+    theoretical_NR[t] <- theoretical_NR[t-1] * mean_lambda
+  }
+  return(data.frame(time = 1:n_years, theoretical_NR = theoretical_NR))
+}
+
+# Initial number of breeding females (NR)
+initial_NR_1 <- initial_pop_1["NR"]
+initial_NR_2 <- initial_pop_2["NR"]
+initial_NR_3 <- initial_pop_3["NR"]
+
+# Calculate theoretical trajectories
+theoretical_trajectory_1 <- calculate_theoretical_trajectory(mean_lambda_1, initial_NR_1, 100)
+theoretical_trajectory_2 <- calculate_theoretical_trajectory(mean_lambda_2, initial_NR_2, 100)
+theoretical_trajectory_3 <- calculate_theoretical_trajectory(mean_lambda_3, initial_NR_3, 100)
+
+
+############################
+# 9. Calculate Time to Quasi-Extinction
+############################
+
+get_extinction_time <- function(sim_results) {
+  # This function calculates the time to quasi-extinction (NR <= 10)
+  # for each simulation.
+  #
+  # Args:
+  #   sim_results: Simulation results
+  #
+  # Returns:
+  #   Vector of extinction times (or NA if never reached)
+  
+  sapply(sim_results, function(sim) {
+    extinction_time <- which(sim$NR <= 10)
+    if (length(extinction_time) > 0) {
+      return(min(extinction_time))
+    } else {
+      return(NA)  # If population never drops below 10
+    }
+  })
+}
+
+# Calculate extinction times for each scenario
+extinction_times_1 <- get_extinction_time(sim_results_1)
+extinction_times_2 <- get_extinction_time(sim_results_2)
+extinction_times_3 <- get_extinction_time(sim_results_3)
+
+# Summary of results
+cat("\n--- Mean Time to Quasi-Extinction (Years) ---\n")
+cat("Scenario 1 (2003-2016): ", mean(extinction_times_1, na.rm = TRUE), "\n")
+cat("Scenario 2 (2019-2020): ", mean(extinction_times_2, na.rm = TRUE), "\n")
+cat("Scenario 3 (2021-2024): ", mean(extinction_times_3, na.rm = TRUE), "\n")
+
+cat("\n--- Proportion of Simulations Reaching Quasi-Extinction ---\n")
+cat("Scenario 1 (2003-2016): ", mean(!is.na(extinction_times_1)) * 100, "%\n")
+cat("Scenario 2 (2019-2020): ", mean(!is.na(extinction_times_2)) * 100, "%\n")
+cat("Scenario 3 (2021-2024): ", mean(!is.na(extinction_times_3)) * 100, "%\n")
+
+############################
+# 10. Wilcoxon Tests for Extinction Times
+############################
+
+# Remove NA values (simulations that never reach quasi-extinction)
+extinction_times_1_clean <- na.omit(extinction_times_1)
+extinction_times_2_clean <- na.omit(extinction_times_2)
+extinction_times_3_clean <- na.omit(extinction_times_3)
+
+# Wilcoxon rank-sum tests (pairwise comparisons)
+wilcox_1_vs_2 <- wilcox.test(extinction_times_1_clean, extinction_times_2_clean)
+wilcox_1_vs_3 <- wilcox.test(extinction_times_1_clean, extinction_times_3_clean)
+wilcox_2_vs_3 <- wilcox.test(extinction_times_2_clean, extinction_times_3_clean)
+
+cat("\n--- Wilcoxon Test Results (Time to Quasi-Extinction) ---\n")
+cat("Scenario 1 vs Scenario 2: p-value =", wilcox_1_vs_2$p.value, "\n")
+cat("Scenario 1 vs Scenario 3: p-value =", wilcox_1_vs_3$p.value, "\n")
+cat("Scenario 2 vs Scenario 3: p-value =", wilcox_2_vs_3$p.value, "\n")
+
+
+############################
+# 11. Prepare Data for Plots
+############################
+
+prepare_plot_data <- function(sim_results) {
+  # This function prepares data for plotting.
+  # It combines simulation results and calculates the mean trajectory.
+  #
+  # Args:
+  #   sim_results: Simulation results (list of data.frames)
+  #
+  # Returns:
+  #   List with:
+  #     - plot_data: Data for individual trajectories
+  #     - mean_trajectory: Mean trajectory
+  
+  plot_data <- do.call(rbind, lapply(seq_along(sim_results), function(i) {
+    sim <- sim_results[[i]]
+    data.frame(time = sim$time, NR = sim$NR, sim_id = i)
+  }))
+  
+  mean_trajectory <- plot_data %>%
+    group_by(time) %>%
+    summarise(mean_NR = mean(NR))
+  
+  return(list(plot_data = plot_data, mean_trajectory = mean_trajectory))
+}
+
+# Prepare data for each scenario
+plot_data_1 <- prepare_plot_data(sim_results_1)
+plot_data_2 <- prepare_plot_data(sim_results_2)
+plot_data_3 <- prepare_plot_data(sim_results_3)
+
+############################
+# 12. Plot Trajectories 
+############################
+# Function to plot each scenario individually
+plot_single_scenario <- function(plot_data, theoretical_trajectory, mean_lambda, scenario_title, scenario_color) {
+  ggplot() +
+    # Individual trajectories in grey
+    geom_line(data = plot_data$plot_data,
+              aes(x = time, y = NR, group = sim_id),
+              color = "grey", alpha = 0.3, linewidth = 0.3) +
+    # Theoretical trajectory in colour (one per scenario)
+    geom_line(data = theoretical_trajectory,
+              aes(x = time, y = theoretical_NR),
+              color = scenario_color, linewidth = 1, linetype = "solid") +
+    # quasi-extinction threshold
+    geom_hline(yintercept = 10, linetype = "dotted", color = "black") +
+    
+    # Axis limits
+    scale_x_continuous(limits = c(0, 100), expand = c(0, 0), breaks = seq(0, 100, 10)) +
+    scale_y_continuous(limits = c(0, 200), expand = c(0, 0)) +
+    # Title of the scenario
+    labs(title = scenario_title,
+         x = "",
+         y = "") +
+    # Lambda λs
+    annotate("text", x = 80, y = 180,
+             label = paste("λs =", round(mean_lambda, 3)),
+             color = scenario_color, size = 4) +
+    theme_classic() +
+    theme(
+      plot.margin = unit(c(0, 0.5, 0.1, 0.5), "cm"),
+      plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+      panel.border = element_rect(colour = "black", fill=NA, linewidth=0.5)
+    )
+}
+
+# Define colours for each scenario
+scenario_colors <- c(
+  "Before outbreak" = "#1f77b4",  # Bleu
+  "During outbreak" = "#ff7f0e",  # Orange
+  "After outbreak" = "#2ca02c"   # Vert
+)
+
+# Create plots for each scenario without titles and labels
+p1 <- plot_single_scenario(
+  plot_data_1, theoretical_trajectory_1, mean_lambda_1,
+  "Scenario 1: Before outbreak", scenario_colors["Before outbreak"]
+) +
+  geom_vline(xintercept = mean(extinction_times_1, na.rm = TRUE), color = "black")
+
+p2 <- plot_single_scenario(
+  plot_data_2, theoretical_trajectory_2, mean_lambda_2,
+  "Scenario 2: During outbreak", scenario_colors["During outbreak"]
+) +
+  geom_vline(xintercept = mean(extinction_times_2, na.rm = TRUE), color = "black")
+
+p3 <- plot_single_scenario(
+  plot_data_3, theoretical_trajectory_3, mean_lambda_3,
+  "Scenario 3: After outbreak", scenario_colors["After outbreak"]
+) +
+  geom_vline(xintercept = mean(extinction_times_3, na.rm = TRUE), color = "black")
+
+# Combining charts (ncol = 1)
+combined_plot <- plot_grid(
+  p1, p2, p3,
+  ncol = 1,  # Disposition verticale
+  align = "v",
+  axis = "lr"  # Axe y seulement à gauche
+)
+
+# Axis labels
+combined_plot <- ggdraw(combined_plot) +
+  draw_label("Number of breeding females", x = 0.01, y = 0.5, angle = 90,
+             size = 12, hjust = 0.5)+
+  draw_label("Years", x = 0.53, y = 0.015, angle = 0,
+             size = 12, hjust = 0.5)
+
+############################
+# 13. DISPLAY PLOTS
+############################
+
+print(combined_plot)
